@@ -48,12 +48,11 @@ public class MainActivity extends ActionBarActivity {
                 // see if identity machs
                 if ((beacon.getProximityUUID().equals(proximityUUID)) &&
                         (beacon.getMajor() == major) && (beacon.getMinor() == minor)) {
-                    Log.d(TAG, "Found Atv Beacon! " + beacon + rssi);
+                    //Log.d(TAG, "Found Atv Beacon! " + beacon + rssi);
                     if (beacon.getPower() >= rssi) {
-                        Log.d(TAG, "Not close enough.");
+                        //Log.d(TAG, "Not close enough.");
                         return;
                     }
-                    appendStatus("Beacon found: " + beacon.getProximityUUID());
                     bluetoothAdapter.stopLeScan(leScanCallback);
                     connectGatt(device);
                     connectionState = STATE_CONNECTING;
