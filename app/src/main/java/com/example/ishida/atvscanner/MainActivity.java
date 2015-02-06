@@ -9,13 +9,17 @@ import android.bluetooth.BluetoothGattService;
 import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothProfile;
 import android.content.Context;
+import android.database.Cursor;
+import android.provider.ContactsContract;
 import android.support.v7.app.ActionBarActivity;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.view.WindowManager;
 import android.widget.TextView;
 
+import java.util.LinkedList;
 import java.util.List;
 import java.util.UUID;
 
@@ -30,9 +34,13 @@ public class MainActivity extends ActionBarActivity {
 
     static final UUID service_uuid = UUID.fromString("00001802-0000-1000-8000-00805f9b34fb");
     static final UUID characteristic_uuid = UUID.fromString("00002a06-0000-1000-8000-00805f9b34fb");
+    static final UUID characteristic_uuid2 = UUID.fromString("00002a19-0000-1000-8000-00805f9b34fb");
 
     private int connectionState = STATE_DISCONNECTED;
     private TextView textView;
+    private String userName;
+
+    private LinkedList<GATTRequest> requestQueue = new LinkedList<GATTRequest>();
 
     private static final int STATE_DISCONNECTED = 0;
     private static final int STATE_CONNECTING = 1;
@@ -40,7 +48,7 @@ public class MainActivity extends ActionBarActivity {
 
     private BluetoothManager bluetoothManager;
     private BluetoothAdapter bluetoothAdapter;
-    private BluetoothAdapter.LeScanCallback leScanCallback = new BluetoothAdapter.LeScanCallback() {
+    private final BluetoothAdapter.LeScanCallback leScanCallback = new BluetoothAdapter.LeScanCallback() {
         @Override
         public void onLeScan(BluetoothDevice device, int rssi, byte[] scanRecord) {
             AtvBeacon beacon = AtvBeacon.create(device, scanRecord);
@@ -53,7 +61,7 @@ public class MainActivity extends ActionBarActivity {
                         //Log.d(TAG, "Not close enough.");
                         return;
                     }
-                    bluetoothAdapter.stopLeScan(leScanCallback);
+                    stopScan();
                     connectGatt(device);
                     connectionState = STATE_CONNECTING;
                 }
@@ -74,14 +82,12 @@ public class MainActivity extends ActionBarActivity {
                 Log.i(TAG, "Disconnected from GATT server.");
                 appendStatus("Disconnected from GATT server.");
                 connectionState = STATE_DISCONNECTED;
-                if (bluetoothAdapter != null) {
-                    bluetoothAdapter.startLeScan(leScanCallback);
-                }
+                startScan();
             }
         }
 
         @Override
-        public void onServicesDiscovered(BluetoothGatt gatt, int status) {
+        public void onServicesDiscovered(final BluetoothGatt gatt, int status) {
             Log.d(TAG, "onServicesDiscovered: ");
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 List<BluetoothGattService> services = gatt.getServices();
@@ -90,13 +96,22 @@ public class MainActivity extends ActionBarActivity {
                     if (service.getUuid().equals(service_uuid)) {
                         BluetoothGattCharacteristic characteristic = service.getCharacteristic(characteristic_uuid);
                         if (characteristic != null) {
-                            Log.d(TAG, "Found Service & Characteristic");
+                            Log.d(TAG, "Found Characteristic 1");
                             appendStatus("Read Characteristic");
                             gatt.readCharacteristic(characteristic);
+                            //postGATTRequest(new GATTReadRequest(characteristic));
                             int prop = characteristic.getProperties();
                             if ((prop | BluetoothGattCharacteristic.PROPERTY_NOTIFY) > 0) {
                                 gatt.setCharacteristicNotification(characteristic, true);
                             }
+                        }
+                        characteristic = service.getCharacteristic(characteristic_uuid2);
+                        if (characteristic != null) {
+                            Log.d(TAG, "Found Characteristic 2");
+                            appendStatus("Write Characteristic");
+                            characteristic.setValue(userName);
+                            //gatt.writeCharacteristic(characteristic);
+                            postGATTRequest(new GATTWriteRequest(characteristic));
                         }
                     }
                 }
@@ -108,12 +123,20 @@ public class MainActivity extends ActionBarActivity {
         @Override
         public void onCharacteristicRead(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
             Log.d(TAG, "onCharacteristicRead: ");
+            processGATTRequest();
             readCharacteristic(characteristic);
+        }
+
+        @Override
+        public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
+            Log.d(TAG, "onCharacteristicWrite: " + status + ", " + characteristic.getStringValue(0));
+            processGATTRequest();
         }
 
         @Override
         public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
             Log.d(TAG, "onCharacteristicChanged: ");
+            processGATTRequest();
             readCharacteristic(characteristic);
         }
     };
@@ -139,22 +162,31 @@ public class MainActivity extends ActionBarActivity {
         bluetoothManager = (BluetoothManager)getSystemService(Context.BLUETOOTH_SERVICE);
         bluetoothAdapter = bluetoothManager.getAdapter();
 
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+        // open Cursor for Profile
+        Cursor mCursor = getContentResolver().query(
+                ContactsContract.Profile.CONTENT_URI, null, null, null, null);
+
+        mCursor.moveToFirst();
+
+        // retrieve UserName
+        int nameIndex = mCursor
+                .getColumnIndex(ContactsContract.Profile.DISPLAY_NAME);
+        userName = mCursor.getString(nameIndex);
+        mCursor.close();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        if (bluetoothAdapter != null) {
-            bluetoothAdapter.stopLeScan(leScanCallback);
-        }
+        stopScan();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        if (bluetoothAdapter != null) {
-            bluetoothAdapter.startLeScan(leScanCallback);
-        }
+        startScan();
     }
 
 
@@ -188,14 +220,44 @@ public class MainActivity extends ActionBarActivity {
             Log.d(TAG, "Not disconnected. Ignored.");
             return;
         }
-        Log.d(TAG, "Connecting to " + device);
-        appendStatus("Connecting to " + device);
+        Log.d(TAG, "Connecting to " + device.getName());
+        appendStatus("Connecting to " + device.getName());
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
                 bluetoothGatt = device.connectGatt(MainActivity.this, false, gattCallback);
+                //bluetoothGatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);
             }
         });
+    }
+
+    private void startScan() {
+        if (bluetoothAdapter != null) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    bluetoothAdapter.startLeScan(leScanCallback);
+                }
+            });
+
+            appendStatus("scan started");
+        } else {
+            appendStatus("Failed to start scan");
+        }
+    }
+
+    private void stopScan() {
+        if (bluetoothAdapter != null) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    bluetoothAdapter.stopLeScan(leScanCallback);
+                }
+            });
+            appendStatus("scan stopped");
+        } else {
+            appendStatus("Failed to stop scan");
+        }
     }
 
     private void appendStatus(final String status) {
@@ -209,4 +271,63 @@ public class MainActivity extends ActionBarActivity {
             }
         });
     }
+
+    private abstract class GATTRequest {
+
+        protected BluetoothGattCharacteristic characteristic;
+        GATTRequest(BluetoothGattCharacteristic characteristic) {
+            this.characteristic = characteristic;
+        }
+
+        abstract void process(final BluetoothGatt gatt);
+
+    }
+
+    private class GATTReadRequest extends GATTRequest{
+
+        GATTReadRequest(BluetoothGattCharacteristic characteristic) {
+            super(characteristic);
+        }
+
+        @Override
+        void process(final BluetoothGatt gatt) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    gatt.readCharacteristic(characteristic);
+                }
+            });
+        }
+    }
+
+    private class GATTWriteRequest extends GATTRequest{
+
+        GATTWriteRequest(BluetoothGattCharacteristic characteristic) {
+            super(characteristic);
+        }
+
+        @Override
+        void process(final BluetoothGatt gatt) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    gatt.writeCharacteristic(characteristic);
+                }
+            });
+        }
+    }
+
+    synchronized private void postGATTRequest(GATTRequest request) {
+
+            requestQueue.offer(request);
+
+    }
+
+    synchronized private void processGATTRequest() {
+        GATTRequest request = requestQueue.poll();
+        if (request != null) {
+            request.process(bluetoothGatt);
+        }
+    }
+
 }
