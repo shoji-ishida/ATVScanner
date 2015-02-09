@@ -1,6 +1,8 @@
 package com.example.ishida.atvscanner;
 
+import android.annotation.TargetApi;
 import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothAssignedNumbers;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCallback;
@@ -8,8 +10,14 @@ import android.bluetooth.BluetoothGattCharacteristic;
 import android.bluetooth.BluetoothGattService;
 import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothProfile;
+import android.bluetooth.le.BluetoothLeScanner;
+import android.bluetooth.le.ScanCallback;
+import android.bluetooth.le.ScanFilter;
+import android.bluetooth.le.ScanResult;
+import android.bluetooth.le.ScanSettings;
 import android.content.Context;
 import android.database.Cursor;
+import android.os.Build;
 import android.provider.ContactsContract;
 import android.support.v7.app.ActionBarActivity;
 import android.os.Bundle;
@@ -19,11 +27,14 @@ import android.view.MenuItem;
 import android.view.WindowManager;
 import android.widget.TextView;
 
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.UUID;
 
 
+@TargetApi(Build.VERSION_CODES.LOLLIPOP)
 public class MainActivity extends ActionBarActivity {
 
     private static final String TAG = "AtvScanner";
@@ -68,6 +79,9 @@ public class MainActivity extends ActionBarActivity {
             }
         }
     };
+    private BluetoothLeScanner bleScanner;
+    private ScanCallback scanCallback;
+
     private BluetoothGatt bluetoothGatt;
     private final BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
         @Override
@@ -162,6 +176,26 @@ public class MainActivity extends ActionBarActivity {
         bluetoothManager = (BluetoothManager)getSystemService(Context.BLUETOOTH_SERVICE);
         bluetoothAdapter = bluetoothManager.getAdapter();
 
+        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.KITKAT) {
+            bleScanner = bluetoothAdapter.getBluetoothLeScanner();
+            scanCallback = new ScanCallback() {
+                @Override
+                public void onScanResult(int callbackType, ScanResult result) {
+                    Log.d(TAG, "Scan result: " + callbackType + ", " + result);
+                }
+
+                @Override
+                public void onBatchScanResults(List<ScanResult> results) {
+                    Log.d(TAG, "Batch scan result");
+                }
+
+                @Override
+                public void onScanFailed(int errorCode) {
+                    Log.d(TAG, "Scan Failed: " + errorCode);
+                }
+            };
+        }
+
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         // open Cursor for Profile
@@ -236,7 +270,11 @@ public class MainActivity extends ActionBarActivity {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    bluetoothAdapter.startLeScan(leScanCallback);
+                    if (Build.VERSION.SDK_INT > Build.VERSION_CODES.KITKAT) {
+                        startLScan();
+                    } else {
+                        bluetoothAdapter.startLeScan(leScanCallback);
+                    }
                 }
             });
 
@@ -246,18 +284,34 @@ public class MainActivity extends ActionBarActivity {
         }
     }
 
+    private void startLScan() {
+        ScanFilter filter = new ScanFilter.Builder().setManufacturerData(BluetoothAssignedNumbers.APPLE, createManufactureData(), mask).build();
+        ArrayList<ScanFilter> filters = new ArrayList<ScanFilter>();
+        filters.add(filter);
+        ScanSettings settings = new ScanSettings.Builder().setReportDelay(0).setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build();
+        bleScanner.startScan(filters, settings, scanCallback);
+    }
+
     private void stopScan() {
         if (bluetoothAdapter != null) {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    bluetoothAdapter.stopLeScan(leScanCallback);
+                    if (Build.VERSION.SDK_INT > Build.VERSION_CODES.KITKAT) {
+                        stopLScan();
+                    } else {
+                        bluetoothAdapter.stopLeScan(leScanCallback);
+                    }
                 }
             });
             appendStatus("scan stopped");
         } else {
             appendStatus("Failed to stop scan");
         }
+    }
+
+    private void stopLScan() {
+        bleScanner.stopScan(scanCallback);
     }
 
     private void appendStatus(final String status) {
@@ -330,4 +384,25 @@ public class MainActivity extends ActionBarActivity {
         }
     }
 
+    private static byte[] createManufactureData() {
+        ByteBuffer bb = ByteBuffer.allocate(23);
+
+        bb.putShort((short) 0x0215); //iBeacon
+        bb.putLong(proximityUUID.getMostSignificantBits());
+        bb.putLong(proximityUUID.getLeastSignificantBits());
+        bb.putShort((short) 0x0001); //major
+        bb.putShort((short) 0x0001); //minor
+        bb.put((byte) 0xc5); //Tx Power
+
+        return bb.array();
+    }
+
+    private static byte[] mask = {
+            (byte)0x1, (byte)0x1,
+            (byte)0x1, (byte)0x1, (byte)0x1, (byte)0x1, (byte)0x1, (byte)0x1, (byte)0x1, (byte)0x1,
+            (byte)0x1, (byte)0x1, (byte)0x1, (byte)0x1, (byte)0x1, (byte)0x1, (byte)0x1, (byte)0x1,
+            (byte)0x1, (byte)0x1,
+            (byte)0x1, (byte)0x1,
+            (byte)0x0
+    };
 }
